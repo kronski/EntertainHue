@@ -1,13 +1,17 @@
 #!/usr/bin/python3
 
 import sys
-import socket
 from http_parser.parser import HttpParser
 import argparse
 import requests 
 import time
 import json
 from pathlib import Path
+import ssl
+from socket import socket, AF_INET, SOCK_DGRAM, IPPROTO_UDP, timeout
+from dtls import do_patch
+import sslpsk
+import binascii
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-v","--verbose", dest="verbose", action="store_true")
@@ -31,7 +35,7 @@ def findhue():
         '\r\n'
 
     # Set up UDP socket
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
     s.settimeout(5)
     s.sendto(msg.encode('utf-8'), ('239.255.255.250', 1900) )
 
@@ -49,7 +53,7 @@ def findhue():
 
             if p.is_message_complete():
                 break
-    except socket.timeout:
+    except timeout:
         pass
     return None
 
@@ -129,3 +133,24 @@ if len(groups)>1:
 if groupid is None:
     groupid=next(iter(groups))
 verbose("Using groupid={}".format(groupid))
+
+verbose("Enabling streaming on group")
+r = requests.put(url = baseurl+"{}/groups/{}".format(clientdata['username'],groupid),json={"stream":{"active":True}}) 
+jsondata = r.json()
+verbose(jsondata)
+
+try:
+    do_patch()
+
+    verbose('Unhexing clientkey')
+    clientkey = binascii.unhexlify(clientdata['clientkey'])
+    verbose(clientdata['clientkey'],"=>", clientkey)
+
+    sock = sslpsk.wrap_socket(socket(AF_INET, SOCK_DGRAM),psk=(clientdata['username'],clientkey))
+    sock.connect((hueip, 2100))
+    sock.close()
+finally:
+    verbose("Disabling streaming on group")
+    r = requests.put(url = baseurl+"{}/groups/{}".format(clientdata['username'],groupid),json={"stream":{"active":False}}) 
+    jsondata = r.json()
+    verbose(jsondata)
