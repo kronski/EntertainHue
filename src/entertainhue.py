@@ -7,9 +7,11 @@ import argparse
 import requests 
 import time
 import json
+from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-v","--verbose", dest="verbose", action="store_true")
+parser.add_argument("-g","--groupid", dest="groupid")
 commandlineargs = parser.parse_args()
 
 def eprint(*args, **kwargs):
@@ -54,8 +56,7 @@ def findhue():
 verbose("Finding bridge...")
 (hueip,port),headers = findhue() or ((None,None),None)
 if hueip is None:
-    eprint("Hue bridge not found.")
-    exit
+    sys.exit("Hue bridge not found.")
 verbose("Bridge found on", hueip)
 
 baseurl = "http://{}/api".format(hueip)
@@ -65,31 +66,66 @@ r = requests.get(url = baseurl+"/config")
 jsondata = r.json()
 
 if jsondata["apiversion"]<"1.22":
-    eprint("Hue apiversion not 1.22 or above.")
-    exit
+    sys.exit("Hue apiversion not 1.22 or above.")
 verbose("Api version good {}...".format(jsondata["apiversion"]))
 
-verbose("Registering on bridge...")
-while True:
-    r = requests.post(url = baseurl, json={"devicetype":"entertainhue python script","generateclientkey":True}) 
-    jsondata = r.json()
-    if isinstance(jsondata,list) \
-    and "success" in jsondata[0] \
-    and jsondata[0]["success"]:
-        f = open("client.json", "w")
-        f.write(json.dumps(jsondata[0]["success"]))
-        f.close()
-        break
-    
-    if isinstance(jsondata,list) \
-    and "error" in jsondata[0] \
-    and "description" in jsondata[0]["error"]:
-        if jsondata[0]["error"]["description"]=="link button not pressed":
-            print("Press button on hue device to authorize")
-            time.sleep(5)
-        else:
-            print(jsondata[0]["error"]["description"])
+verbose("Checking for client.json")
+if Path("./client.json").is_file():
+    f = open("client.json", "r")
+    jsonstr = f.read()
+    clientdata = json.loads(jsonstr)
+    f.close()
+    verbose("Client data found", clientdata)
 
-verbose("Authorized")
+if not isinstance(clientdata,object):
+    verbose("Registering on bridge...")
+    while True:
+        r = requests.post(url = baseurl, json={"devicetype":"entertainhue python script","generateclientkey":True}) 
+        jsondata = r.json()
+        if isinstance(jsondata,list) \
+        and "success" in jsondata[0] \
+        and jsondata[0]["success"]:
+            clientdata = jsondata[0]["success"]
+            f = open("client.json", "w")
+            f.write(json.dumps(clientdata))
+            f.close()
+            break
+        
+        if isinstance(jsondata,list) \
+        and "error" in jsondata[0] \
+        and "description" in jsondata[0]["error"]:
+            if jsondata[0]["error"]["description"]=="link button not pressed":
+                print("Press button on hue device to authorize")
+                time.sleep(5)
+            else:
+                print(jsondata[0]["error"]["description"])
+
+    verbose("Authorized")
 
 
+#r = requests.post(url = baseurl+"{}/groups".format(clientdata['username']), json={"type": "Entertainment","lights": ["1"],"class": "TV"}) 
+r = requests.get(url = baseurl+"{}/groups".format(clientdata['username'])) 
+jsondata = r.json()
+groups = dict()
+groupid = commandlineargs.groupid
+if groupid is not None:
+    verbose("Checking for entertainment group {}".format(groupid))
+else:
+    verbose("Checking for entertainment groups")
+for k in jsondata:
+    if jsondata[k]["type"]=="Entertainment":
+        if groupid is None or k==groupid:
+            groups[k] = jsondata[k]
+if len(groups)==0:
+    if groupid is not None:
+        sys.exit("Entertainment group not found")
+    else:
+        sys.exit("No entertainment group found")
+if len(groups)>1:
+    eprint("Multiple entertainment groups found, specify which with --groupid")
+    for g in groups:
+        eprint("{} = {}".format(g,groups[g]["name"]))
+    sys.exit()
+if groupid is None:
+    groupid=next(iter(groups))
+verbose("Using groupid={}".format(groupid))
