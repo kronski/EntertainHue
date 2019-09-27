@@ -12,6 +12,9 @@ from socket import socket, AF_INET, SOCK_DGRAM, IPPROTO_UDP, timeout
 from dtls import do_patch
 import sslpsk
 import binascii
+import subprocess
+import threading
+import random
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-v","--verbose", dest="verbose", action="store_true")
@@ -56,6 +59,15 @@ def findhue():
     except timeout:
         pass
     return None
+
+def execute(cmd):
+    popen = subprocess.Popen(cmd, stdout=subprocess.PIPE, universal_newlines=True)
+    for stdout_line in iter(popen.stdout.readline, ""):
+        yield stdout_line 
+    popen.stdout.close()
+    return_code = popen.wait()
+    if return_code:
+        raise subprocess.CalledProcessError(return_code, cmd)
 
 verbose("Finding bridge...")
 (hueip,port),headers = findhue() or ((None,None),None)
@@ -134,21 +146,74 @@ if groupid is None:
     groupid=next(iter(groups))
 verbose("Using groupid={}".format(groupid))
 
+
+r = requests.get(url = baseurl+"{}/groups/{}".format(clientdata['username'],groupid))
+jsondata = r.json()
+print(jsondata)
+
+
 verbose("Enabling streaming on group")
 r = requests.put(url = baseurl+"{}/groups/{}".format(clientdata['username'],groupid),json={"stream":{"active":True}}) 
 jsondata = r.json()
 verbose(jsondata)
 
+def output_reader(proc):
+    #for line in iter(proc.stdout.readline, b''):
+    #    if not line:
+    #        break
+    #    print('got line: {0}'.format(line), end='')
+    print('x')
+
+def output_writer(proc):
+    while True:
+
+        rgb1 = bytearray([random.randint(0, 255),random.randint(0, 255),random.randint(0, 255),random.randint(0, 255),random.randint(0, 255),random.randint(0, 255)])
+        rgb2 = bytearray([random.randint(0, 255),random.randint(0, 255),random.randint(0, 255),random.randint(0, 255),random.randint(0, 255),random.randint(0, 255)])
+
+        # message = bytes('HueStream','utf-8')+b'\1\0\0\0\0\0\0'+b'\0\0\x0B\xFF\xFF\x00\x00\x00\x00'+b'\0\0\x0C\xFF\xFF\x00\x00\xFF\xFF'
+        message = bytes('HueStream','utf-8')+b'\1\0\0\0\0\0\0'+b'\0\0\x0B'+rgb1+b'\0\0\x0C'+rgb2
+        #                                      V V S R R C R 
+        print(len(message))
+        proc.stdin.write(message)
+        proc.stdin.flush()
+        print("sent")
+        time.sleep(.2)
+
 try:
-    do_patch()
+    #do_patch()
 
-    verbose('Unhexing clientkey')
-    clientkey = binascii.unhexlify(clientdata['clientkey'])
-    verbose(clientdata['clientkey'],"=>", clientkey)
+    #verbose('Unhexing clientkey')
+    #clientkey = binascii.unhexlify(clientdata['clientkey'])
+    #verbose(clientdata['clientkey'],"=>", clientkey)
 
-    sock = sslpsk.wrap_socket(socket(AF_INET, SOCK_DGRAM),psk=(clientdata['username'],clientkey))
-    sock.connect((hueip, 2100))
-    sock.close()
+    # sock = sslpsk.wrap_socket(socket(AF_INET, SOCK_DGRAM),psk=(clientdata['username'],clientkey))
+    # sock.connect((hueip, 2100))
+    # sock.close()
+    # result = subprocess.run(['ls', '-l'], stdout=subprocess.PIPE)
+    # print(result.stdout)
+
+    #for path in execute(["openssl","s_client","-dtls1_2","-cipher","DHE-PSK-AES256-GCM-SHA384","-psk_identity",clientdata['username'],"-psk",clientdata['clientkey'], "-connect", hueip+":2100"]):
+    #    print(path, end="")
+    try:
+        cmd = ["openssl","s_client","-dtls1_2","-cipher","DHE-PSK-AES256-GCM-SHA384","-psk_identity",clientdata['username'],"-psk",clientdata['clientkey'], "-connect", hueip+":2100"]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=False)
+
+        print(proc.stdin)
+
+        reader = threading.Thread(target=output_reader, args=(proc,))
+        writer = threading.Thread(target=output_writer, args=(proc,))
+        reader.start()
+        writer.start()
+
+        input("Press return to stop")
+        proc.stdin.close()
+
+        reader.join()
+        writer.join()
+    except Exception as e:
+        print(e)
+
+    # input("Press Enter to continue...")
 finally:
     verbose("Disabling streaming on group")
     r = requests.put(url = baseurl+"{}/groups/{}".format(clientdata['username'],groupid),json={"stream":{"active":False}}) 
